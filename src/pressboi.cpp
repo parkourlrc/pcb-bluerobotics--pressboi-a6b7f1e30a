@@ -392,9 +392,11 @@ void Pressboi::updateState() {
                 #if WATCHDOG_ENABLED
                 g_watchdogBreadcrumb = WD_BREADCRUMB_MOTOR_FAULT_REPORT;
                 #endif
+                // Stop the other motor first: it would keep moving, racking the gantry, and ERROR refuses Stop.
+                abort();
                 m_mainState = STATE_ERROR;
                 g_errorLog.log(LOG_ERROR, "Motor fault detected -> ERROR state");
-                reportEvent(STATUS_PREFIX_ERROR, "Motor fault detected. System entering ERROR state. Use CLEAR_ERRORS to reset.");
+                reportEvent(STATUS_PREFIX_ERROR, "Motor fault detected. System entering ERROR state. Send reset to recover.");
                 break;
             }
 
@@ -731,8 +733,17 @@ void Pressboi::dispatchCommand(const Message& msg) {
             } else {
                 // Motor torque mode: set offset to current torque reading
                 float old_offset = m_motor.getForceCalibrationOffset();
-                float current_torque = (MOTOR_A.HlfbPercent() + MOTOR_B.HlfbPercent()) / 2.0f;
-                float new_offset = -current_torque;
+                // HlfbPercent reads TORQUE_HLFB_AT_POSITION at rest, not a torque: averaged in, that set an offset of
+                // +9999 and with it a torque limit no move could reach.
+                float torque_a = MOTOR_A.HlfbPercent();
+                float torque_b = MOTOR_B.HlfbPercent();
+                if (torque_a == TORQUE_HLFB_AT_POSITION || torque_b == TORQUE_HLFB_AT_POSITION) {
+                    reportEvent(STATUS_PREFIX_INFO, "Motor torque reads nothing at rest. Offset left unchanged.");
+                    reportEvent(STATUS_PREFIX_DONE, "set_force_zero");
+                    break;
+                }
+                // The force is (torque - offset) / scale, so zero force means an offset of the torque itself.
+                float new_offset = (torque_a + torque_b) / 2.0f;
                 
                 m_motor.setForceCalibrationOffset(new_offset);
                 
