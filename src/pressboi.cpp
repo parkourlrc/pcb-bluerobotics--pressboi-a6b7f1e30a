@@ -908,7 +908,7 @@ void Pressboi::dispatchCommand(const Message& msg) {
             snprintf(msg, sizeof(msg), "=== ERROR LOG: %d entries ===", entryCount);
             reportEvent(STATUS_PREFIX_INFO, msg);
             
-            // Send each entry (with small delay to prevent TX queue overflow)
+            // Send each entry, draining the TX queue as it goes: it holds 32 lines and a delay does not empty it.
             for (int i = 0; i < entryCount; i++) {
                 LogEntry entry;
                 if (g_errorLog.getEntry(i, &entry)) {
@@ -926,13 +926,9 @@ void Pressboi::dispatchCommand(const Message& msg) {
                     snprintf(msg, sizeof(msg), "[%lu] %s: %s", entry.timestamp, levelStr, entry.message);
                     reportEvent(STATUS_PREFIX_INFO, msg);
                     
-                    // Small delay to allow TX queue to drain (prevent overflow)
-                    Delay_ms(5);
+                    m_comms.update();
                     
-                    // Feed watchdog every 5 entries to prevent timeout
-                    if ((i + 1) % 5 == 0) {
-                        feedWatchdog();
-                    }
+                    feedWatchdog();
                 }
             }
             
@@ -971,11 +967,8 @@ void Pressboi::dispatchCommand(const Message& msg) {
                              entry.networkActive, entry.usbAvailable);
                     reportEvent(STATUS_PREFIX_INFO, msg);
                     
-                    // Every 10 entries, add delay to prevent TX queue overflow and feed watchdog
-                    if ((i + 1) % 10 == 0) {
-                        Delay_ms(50);
-                        feedWatchdog();
-                    }
+                    m_comms.update();
+                    feedWatchdog();
                 }
             }
             

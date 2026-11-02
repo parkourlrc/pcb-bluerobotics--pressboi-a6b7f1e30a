@@ -2,6 +2,20 @@
 
 All notable changes to the Pressboi firmware will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Resume direction**: `resume` always moved in the positive direction, so a move or retract toward home resumed the wrong way. It now goes toward the target
+- **Retract start race**: `retract` could report DONE before its motors had started, leaving them running with the state in standby
+- **Motor fault**: a fault in one motor left the other moving, racking the gantry, and ERROR refuses Stop. The fault now stops motion first
+- **Tare in motor_torque mode**: `set_force_zero` at rest set an offset of +9999, and with it a torque limit no move could reach. At rest it now leaves the offset alone, and under torque it sets the offset with the right sign
+- **`dump_error_log`**: lost everything after about 30 lines, its DONE included, because a delay does not drain the TX queue
+- **Target after homing**: read as minus the home offset until the next move; it now reads the home position
+- **Retract position**: was forgotten at reboot past 100 mm, and stayed relative to the previous home when set to 0 mm
+- **Fault message**: named CLEAR_ERRORS, which is not a command
+
+---
+
 ## [1.14.1] - 2026-03-18
 
 ### Fixed
