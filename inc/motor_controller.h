@@ -386,6 +386,7 @@ private:
     bool m_homingDone;                 ///< Flag indicating if homing has been successfully completed.
     bool m_retractDone;                ///< Flag indicating if retract position has been set.
     bool m_pausedMessageSent;          ///< Flag to prevent spamming "paused" messages.
+    bool m_moveMotionSeen;             ///< The motors have been seen moving since the current retract started.
     uint32_t m_homingStartTime;        ///< Timestamp (ms) when the homing sequence started, used for timeout.
     
     /**

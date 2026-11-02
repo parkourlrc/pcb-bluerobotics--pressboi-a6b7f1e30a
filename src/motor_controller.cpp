@@ -47,6 +47,7 @@ MotorController::MotorController(MotorDriver* motorA, MotorDriver* motorB, Press
     m_homingStartTime = 0;
     m_isEnabled = true;
     m_pausedMessageSent = false;
+    m_moveMotionSeen = false;
     
     // Initialize gantry squaring homing variables
     m_axisAHomeSensorTriggered = false;
@@ -270,7 +271,7 @@ void MotorController::setup() {
         float tempRetract;
         memcpy(&tempRetract, &retractBits, sizeof(float));
         // Validate retract position is in reasonable range (-100mm to +100mm)
-        if (tempRetract >= -100.0f && tempRetract <= 100.0f) {
+        if (tempRetract >= -1000.0f && tempRetract <= 1000.0f) {
             m_retract_position_mm = tempRetract;
             // Don't set m_retractReferenceSteps yet - leave it as LONG_MIN
             // It will be calculated after homing based on m_retract_position_mm
@@ -641,10 +642,11 @@ void MotorController::updateState() {
                     if (m_homingState == HOMING) {
                         m_machineHomeReferenceSteps = m_motorA->PositionRefCommanded();
                         m_homingDone = true;
+                        m_active_op_target_position_steps = m_machineHomeReferenceSteps;
                         
                         // If a retract position was loaded from NVM or set manually, recalculate it
-                        // based on the new home reference.
-                        if (m_retract_position_mm != 0.0f) {
+                        // based on the new home reference (also when set to 0 mm).
+                        if (m_retract_position_mm != 0.0f || m_retractReferenceSteps != LONG_MIN) {
                             m_retractReferenceSteps = m_machineHomeReferenceSteps + static_cast<long>(m_retract_position_mm * STEPS_PER_MM);
                             
                             char dbg[128];
@@ -728,6 +730,8 @@ void MotorController::updateState() {
             }
 
             // Transition from STARTING/RESUMING to ACTIVE when motor begins moving
+            if (isMoving()) m_moveMotionSeen = true;
+
             if ((m_moveState == MOVE_STARTING || m_moveState == MOVE_RESUMING) && isMoving()) {
                 m_moveState = MOVE_ACTIVE;
                 m_active_op_segment_initial_axis_steps = m_motorA->PositionRefCommanded();
@@ -736,7 +740,10 @@ void MotorController::updateState() {
             // Only check for move completion when in ACTIVE or RESUMING state
             // Don't send DONE while still in STARTING state (motor hasn't begun moving yet)
             if (!isMoving() && m_moveState != MOVE_PAUSED) {
-                bool isStarting = (m_moveState == MOVE_STARTING || m_moveState == MOVE_RESUMING);
+                // A retract has no starting state of its own: it is under way once its motors have moved.
+                bool retractNotStarted = (m_moveState == MOVE_TO_HOME && !m_moveMotionSeen
+                    && m_motorA->PositionRefCommanded() != m_active_op_target_position_steps);
+                bool isStarting = (m_moveState == MOVE_STARTING || m_moveState == MOVE_RESUMING || retractNotStarted);
                 uint32_t elapsed = Milliseconds() - m_moveStartTime;
                 
                 // If still in STARTING/RESUMING state, only timeout if we've waited too long
@@ -775,6 +782,8 @@ void MotorController::updateState() {
                         
                         // Start retract move
                         m_moveState = MOVE_TO_HOME;
+                        m_moveMotionSeen = false;
+                        m_moveStartTime = Milliseconds();
                         m_activeMoveCommand = "retract";
                         m_active_op_target_position_steps = retract_target;
                         long current_pos = m_motorA->PositionRefCommanded();
@@ -1009,8 +1018,8 @@ void MotorController::home() {
     m_homingTouchSps = (int)fabs(HOMING_TOUCH_VEL_MMS * STEPS_PER_MM);
     m_homingAccelSps2 = (int)fabs(HOMING_ACCEL_MMSS * STEPS_PER_MM);
     
-    // Set target position to 0 (home position) for telemetry
-    m_active_op_target_position_steps = 0;
+    // The position stands as the target until homing sets the new zero (raw step 0 reads as minus the home offset).
+    m_active_op_target_position_steps = m_motorA->PositionRefCommanded();
     
     char logMsg[200];
     snprintf(logMsg, sizeof(logMsg), "Homing params: dist_steps=%ld, rapid_sps=%d, touch_sps=%d, accel_sps2=%d",
@@ -1149,6 +1158,8 @@ void MotorController::retract(const char* args) {
     fullyResetActiveMove();
     m_state = STATE_MOVING;
     m_moveState = MOVE_TO_HOME;
+    m_moveMotionSeen = false;
+    m_moveStartTime = Milliseconds();
     m_activeMoveCommand = "retract";
     
     m_active_op_target_position_steps = m_retractReferenceSteps;  // Store for telemetry
@@ -1501,11 +1512,11 @@ void MotorController::resumeOperation() {
         if (m_moveState == MOVE_PAUSED) {
             // Calculate remaining steps NOW (at resume time) based on current position
             long current_pos = m_motorA->PositionRefCommanded();
-            long steps_moved_so_far = current_pos - m_active_op_initial_axis_steps;
-            long remaining_steps = m_active_op_total_target_steps - std::abs(steps_moved_so_far);
+            // Signed, toward the target: a move or retract toward home runs in the negative direction.
+            long remaining_steps = m_active_op_target_position_steps - current_pos;
             
             // Resume paused moves
-            if (remaining_steps > 0) {
+            if (remaining_steps != 0) {
                 m_active_op_remaining_steps = remaining_steps;
                 m_active_op_segment_initial_axis_steps = current_pos;
                 m_moveState = MOVE_RESUMING;
@@ -1857,6 +1868,8 @@ void MotorController::handleLimitReached(const char* limit_type, float limit_val
         
         // Start retract move
         m_moveState = MOVE_TO_HOME;
+        m_moveMotionSeen = false;
+        m_moveStartTime = Milliseconds();
         m_activeMoveCommand = "retract";
         m_active_op_target_position_steps = retract_target;
         long current_pos = m_motorA->PositionRefCommanded();
@@ -1887,6 +1900,8 @@ void MotorController::handleLimitReached(const char* limit_type, float limit_val
         
         // Start retract move
         m_moveState = MOVE_TO_HOME;
+        m_moveMotionSeen = false;
+        m_moveStartTime = Milliseconds();
         m_activeMoveCommand = "retract";
         m_active_op_target_position_steps = retract_target;
         long current_pos = m_motorA->PositionRefCommanded();
